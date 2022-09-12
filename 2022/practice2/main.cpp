@@ -30,24 +30,38 @@ void glew_fail(std::string_view message, GLenum error)
 const char vertex_shader_source[] =
 R"(#version 330 core
 
-const vec2 VERTICES[3] = vec2[3](
-    vec2(0.0, 1.0),
-    vec2(-sqrt(0.75), -0.5),
-    vec2( sqrt(0.75), -0.5)
+const vec2 VERTICES[8] = vec2[8](
+    vec2(0.0, 0.0),
+    vec2(0, -1),
+    vec2(sqrt(3)/2, -sqrt(1)/2),
+    vec2(sqrt(3)/2, sqrt(1)/2),
+    vec2(0, 1),
+    vec2(-sqrt(3)/2, sqrt(1)/2),
+    vec2(-sqrt(3)/2, -sqrt(1)/2),
+    vec2(0.0, -1)
 );
 
-const vec3 COLORS[3] = vec3[3](
+const vec3 COLORS[8] = vec3[8](
+    vec3(0.0, 0.0, 0.0),
     vec3(1.0, 0.0, 0.0),
+    vec3(1.0, 1.0, 0.0),
     vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0)
+    vec3(0.0, 1.0, 1.0),
+    vec3(0.0, 0.0, 1.0),
+    vec3(1.0, 0.0, 1.0),
+    vec3(1.0, 0.0, 0.0)
 );
 
 out vec3 color;
 
+uniform mat4 transform;
+uniform mat4 view;
+
 void main()
 {
     vec2 position = VERTICES[gl_VertexID];
-    gl_Position = vec4(position, 0.0, 1.0);
+
+    gl_Position = view * transform * vec4(position, 0.0, 1.0) ;
     color = COLORS[gl_VertexID];
 }
 )";
@@ -61,7 +75,10 @@ layout (location = 0) out vec4 out_color;
 
 void main()
 {
-    out_color = vec4(color, 1.0);
+    if (int(floor(color[0]*10) + floor(color[1]*10)) % 2 == 0)
+        out_color = vec4(1,1,1, 0.0);
+    else
+        out_color = vec4(0.0,0.0,0.0, 0.0);
 }
 )";
 
@@ -136,6 +153,8 @@ int main() try
     if (!GLEW_VERSION_3_3)
         throw std::runtime_error("OpenGL 3.3 is not supported");
 
+    SDL_GL_SetSwapInterval(0);
+
     glClearColor(0.8f, 0.8f, 1.f, 0.f);
 
     GLuint vertex_shader = create_shader(GL_VERTEX_SHADER, vertex_shader_source);
@@ -146,7 +165,23 @@ int main() try
     GLuint vao;
     glGenVertexArrays(1, &vao);
 
+    glUseProgram(program);
+
+    GLint uniform_transform = glGetUniformLocation(program, "transform");
+    GLint uniform_view = glGetUniformLocation(program, "view");
+
+
     auto last_frame_start = std::chrono::high_resolution_clock::now();
+
+    float time = 0.f;
+    float scale = 0.25;
+    float x = 0;
+    float y = 0;
+
+    float cx = 1;
+    float cy = 0.5;
+
+    float sy = 2;
 
     bool running = true;
     while (running)
@@ -175,10 +210,46 @@ int main() try
         last_frame_start = now;
 
         glClear(GL_COLOR_BUFFER_BIT);
+//        dt = 0.016f;
+
+        time += dt;
+        printf("%f\n", 1/dt);
+        float aspect_ratio = float(width) / height;
+
+        x += dt * cx;
+        y += dt * sy;
+
+        sy -= 0.001f;
+
+        if (abs(x) > 0.9*aspect_ratio) cx *= -1;
+        if (y < -0.9 && sy < 0) {
+            sy *= -1;
+        }
+        if (y > 0.9 && sy > 0) {
+            sy *= -1;
+        }
+
+        float transform[16] {
+            cos(time) * scale, -sin(time)*scale, 0, x,
+            sin(time) * scale, cos(time) * scale, 0, y,
+            0, 0, 1, 0,
+            0, 0, 0, 1
+        };
+
+        glUniformMatrix4fv(uniform_transform, 1, GL_TRUE, transform);
+
+        float view[16] {
+                1/aspect_ratio, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 1
+        };
+
+        glUniformMatrix4fv(uniform_view, 1, GL_TRUE, view);
 
         glUseProgram(program);
         glBindVertexArray(vao);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, 8);
 
         SDL_GL_SwapWindow(window);
     }
