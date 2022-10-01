@@ -156,6 +156,36 @@ int main() try
 
     float time = 0.f;
 
+    float bunny_x = 0.f;
+    float bunny_y = 0.f;
+    float bunny_z = 4.f;
+
+    glEnable(GL_DEPTH_TEST);
+//    glEnable(GL_CULL_FACE);
+//    glCullFace(GL_FRONT);
+
+    GLuint vbo;
+    GLuint vao;
+    GLuint ebo;
+    glGenBuffers(1, &vbo);
+    glCreateVertexArrays(1, &vao);
+    glGenBuffers(1, &ebo);
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                          sizeof(obj_data::vertex), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_TRUE,
+                          sizeof(obj_data::vertex), (void*)12);
+
+    glBufferData(GL_ARRAY_BUFFER, sizeof(obj_data::vertex) * bunny.vertices.size(), bunny.vertices.data(), GL_STATIC_READ);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(uint32_t) * bunny.indices.size(), bunny.indices.data(), GL_STATIC_READ);
+
+
     std::map<SDL_Keycode, bool> button_down;
 
     bool running = true;
@@ -191,27 +221,78 @@ int main() try
         last_frame_start = now;
         time += dt;
 
-        glClear(GL_COLOR_BUFFER_BIT);
+        float aspect_ratio = float(width) / height;
+
+        float speed = 1.f;
+
+        if (button_down[SDLK_LEFT]) {
+            bunny_x += speed * dt;
+        }
+        if (button_down[SDLK_RIGHT]) {
+            bunny_x -= speed * dt;
+        }
+        if (button_down[SDLK_UP]) {
+            bunny_z -= speed * dt;
+        }
+        if (button_down[SDLK_DOWN]) {
+            bunny_z += speed * dt;
+        }
+
+        float near = 0.001;
+        float far = 1000.0;
+        float right = near;
+        float top = right / aspect_ratio;
+
+        glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 
         float view[16] =
         {
-            1.f, 0.f, 0.f, 0.f,
-            0.f, 1.f, 0.f, 0.f,
-            0.f, 0.f, 1.f, 0.f,
-            0.f, 0.f, 0.f, 1.f,
+            near/right, 0.f, 0.f, 0.f,
+            0.f, near/top, 0.f, 0.f,
+            0.f, 0.f, -(far+near)/(far-near), -(2*far*near)/(far - near),
+            0.f, 0.f, -1.f, 0,
         };
 
-        float transform[16] =
+        float angle = time;
+        float scale = 0.5f;
+
+        float bunny_distance = 2;
+
+        float transformXZ[16] =
         {
-            1.f, 0.f, 0.f, 0.f,
-            0.f, 1.f, 0.f, 0.f,
-            0.f, 0.f, 1.f, 0.f,
+            cos(angle) * scale, 0.f, -sin(angle) * scale, bunny_x + bunny_distance/2,
+            0.f, 1.f * scale, 0.f, bunny_y + bunny_distance/2,
+            sin(angle) * scale, 0.f, cos(angle) * scale, -bunny_z,
             0.f, 0.f, 0.f, 1.f,
+        };
+        float transformXY[16] =
+        {
+                cos(angle) * scale, -sin(angle) * scale, 0.f, bunny_x - bunny_distance/2,
+                sin(angle) * scale, cos(angle) * scale, 0.f, bunny_y - bunny_distance/2,
+                0.f, 0.f, 1.f * scale, -bunny_z,
+                0.f, 0.f, 0.f, 1.f,
+        };
+        float transformYZ[16] =
+        {
+                1.f * scale, 0.f, 0.f, bunny_x - bunny_distance/2,
+                0.f, cos(angle) * scale, -sin(angle) * scale, bunny_y + bunny_distance/2,
+                0.f, sin(angle) * scale, cos(angle) * scale, -bunny_z,
+                0.f, 0.f, 0.f, 1.f,
         };
 
         glUseProgram(program);
         glUniformMatrix4fv(view_location, 1, GL_TRUE, view);
-        glUniformMatrix4fv(transform_location, 1, GL_TRUE, transform);
+        glUniformMatrix4fv(transform_location, 1, GL_TRUE, transformXY);
+
+        glDrawElements(GL_TRIANGLES, bunny.indices.size(), GL_UNSIGNED_INT, (void*)0);
+
+        glUniformMatrix4fv(transform_location, 1, GL_TRUE, transformYZ);
+
+        glDrawElements(GL_TRIANGLES, bunny.indices.size(), GL_UNSIGNED_INT, (void*)0);
+
+        glUniformMatrix4fv(transform_location, 1, GL_TRUE, transformXZ);
+
+        glDrawElements(GL_TRIANGLES, bunny.indices.size(), GL_UNSIGNED_INT, (void*)0);
 
         SDL_GL_SwapWindow(window);
     }
