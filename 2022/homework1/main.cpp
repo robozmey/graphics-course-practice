@@ -128,11 +128,11 @@ struct color_t
     }
 };
 
-//double vWidth;
-//double vHeight;
+double vWidth;
+double vHeight;
 cv::Mat frame;
 cv::Mat grayscale;
-float f(float x, float y, float t) {
+float f2(float x, float y, float t) {
     x *= 5;
     y *= 5;
     return (abs(sin(x + t*2 + y) + cos(y) + cos(x) * sin(t) + sin(t) + sin(y) + sin(y  * cos(t) * x)) / 6);
@@ -141,14 +141,16 @@ float f(float x, float y, float t) {
 long res_x;
 long res_y;
 
-//float f2(float x, float y, float t) {
-//    return grayscale.at<cv::Vec3b>(int((0.5-y) * (vHeight-1)), int((x/4 - 0.25) * (vHeight-1)))[0] / 255.f;
-//}
+float f(float x, float y, float t) {
+    return grayscale.at<cv::Vec3b>(int((0.5-y) * (vHeight-1)), int((x/4 - 0.25) * (vHeight-1)))[0] / 255.f;
+}
 
 void init_points(std::vector<vec2>& points_poses, std::vector<color_t>& points_colors) {
     points_poses.resize(res_x * res_y);
     points_colors.resize(res_x * res_y);
+#pragma omp parallel for
     for (int i = 0; i < res_x; i++) {
+#pragma omp parallel
         for (int j = 0; j < res_y; j++) {
             points_poses[i*res_y + j] = {float(i - float(res_x-1)/2) / float(res_y-1), float(j - float(res_y-1)/2) / float(res_y-1)};
             points_colors[i*res_y + j] = color_t();
@@ -157,6 +159,7 @@ void init_points(std::vector<vec2>& points_poses, std::vector<color_t>& points_c
 }
 
 void fill_indices(std::vector<unsigned int>& indices) {
+
     for (int i = 0; i < res_x-1; i++) {
         for (int j = 0; j < res_y-1; j++) {
             indices.push_back(i * res_y + j);
@@ -169,18 +172,162 @@ void fill_indices(std::vector<unsigned int>& indices) {
     }
 }
 
+void paint_points(const std::vector<vec2>& points_poses, std::vector<color_t>& points_colors, float time) {
+    for (int i = 0; i < points_colors.size(); i++) {
+        auto& pc = points_colors[i];
+        auto& pp = points_poses[i];
+        auto res = f(pp.x, pp.y, time) * 255;
+        pc.color[0] = res;
+        pc.color[1] = 255 - res;
+        pc.color[2] = 255 - res;
+    }
+}
+
+void create_isolines(const std::vector<vec2>& points_poses,
+                     const std::vector<color_t>& points_colors,
+                     const std::vector<float>& iso_borders,
+                     std::vector<unsigned int>& isoindices,
+                     std::vector<vec2>& isopoints) {
+
+    std::map<std::pair<int, std::pair<int, int>>, int> isopoints_indices;
+    for (int iso_border_index = 0; iso_border_index < iso_borders.size(); iso_border_index++) {
+        int border = 255.f * iso_borders[iso_border_index];
+
+        for (int i = 0; i < res_x - 1; i++) {
+            for (int j = 0; j < res_y - 1; j++) {
+                /// a b
+                /// c d
+                auto& a = points_colors[i * res_y + j].color[0];
+                auto& b = points_colors[(i + 1) * res_y + j].color[0];
+                auto& c = points_colors[i * res_y + (j + 1)].color[0];
+                auto& d = points_colors[(i + 1) * res_y + (j + 1)].color[0];
+
+                auto center = (points_colors[i * res_y + j].color[0]
+                               + points_colors[(i + 1) * res_y + j].color[0]
+                               + points_colors[i * res_y + (j + 1)].color[0]
+                               + points_colors[(i + 1) * res_y + (j + 1)].color[0]) / 4;
+
+                auto ba = a > border;
+                auto bb = b > border;
+                auto bc = c > border;
+                auto bd = d > border;
+
+                auto bcenter = center > border;
+
+                /// + +
+                /// + +
+                if (ba == bb && bb == bc && bc == bd) {
+
+                } else {
+
+                    auto &x = points_poses[i * res_y + j].x;
+                    auto &y = points_poses[i * res_y + j].y;
+                    auto &x2 = points_poses[(i + 1) * res_y + (j + 1)].x;
+                    auto &y2 = points_poses[(i + 1) * res_y + (j + 1)].y;
+
+                    /// a b
+                    /// c d
+
+                    ///   v1
+                    /// v2  v4
+                    ///   v3
+                    auto v1x = ((x - x2) * border + a * x2 - b * x) / (a - b);
+                    auto v2y = ((y - y2) * border + a * y2 - c * y) / (a - c);
+                    auto v3x = ((x - x2) * border + c * x2 - d * x) / (c - d);
+                    auto v4y = ((y - y2) * border + b * y2 - d * y) / (b - d);
+
+                    /// v1
+                    std::pair<int, std::pair<int, int>> v1p = {iso_border_index * 2, {i, j}};
+                    if (!isopoints_indices.contains(v1p)) {
+                        isopoints_indices[v1p] = isopoints.size();
+                        isopoints.push_back({v1x, y});
+                    }
+                    auto v1id = isopoints_indices[v1p];
+
+                    /// v2
+                    std::pair<int, std::pair<int, int>> v2p = {iso_border_index * 2 + 1, {i, j}};
+                    if (!isopoints_indices.contains(v2p)) {
+                        isopoints_indices[v2p] = isopoints.size();
+                        isopoints.push_back({x, v2y});
+                    }
+                    auto v2id = isopoints_indices[v2p];
+
+                    /// v3
+                    std::pair<int, std::pair<int, int>> v3p = {iso_border_index * 2, {i, j + 1}};
+                    if (!isopoints_indices.contains(v3p)) {
+                        isopoints_indices[v3p] = isopoints.size();
+                        isopoints.push_back({v3x, y2});
+                    }
+                    auto v3id = isopoints_indices[v3p];
+
+                    /// v4
+                    std::pair<int, std::pair<int, int>> v4p = {iso_border_index * 2 + 1, {i + 1, j}};
+                    if (!isopoints_indices.contains(v4p)) {
+                        isopoints_indices[v4p] = isopoints.size();
+                        isopoints.push_back({x2, v4y});
+                    }
+                    auto v4id = isopoints_indices[v4p];
+
+                    /// + -
+                    /// - -
+                    if (ba != bb && bb == bc && bc == bd) {
+                        isoindices.push_back(v1id);
+                        isoindices.push_back(v2id);
+                    } else if (bb != bc && bc == bd && bd == ba) {
+                        isoindices.push_back(v1id);
+                        isoindices.push_back(v4id);
+                    } else if (bc != bd && bd == ba && ba == bb) {
+                        isoindices.push_back(v3id);
+                        isoindices.push_back(v2id);
+                    } else if (bd != ba && ba == bb && bb == bc) {
+                        isoindices.push_back(v3id);
+                        isoindices.push_back(v4id);
+                    }
+                    /// + +
+                    /// - -
+                    else if (ba == bb && bb != bc && bc == bd) {
+                        isoindices.push_back(v2id);
+                        isoindices.push_back(v4id);
+                    } else if (ba == bc && ba != bb && bb == bd) {
+                        isoindices.push_back(v1id);
+                        isoindices.push_back(v3id);
+                    }
+                    /// + -
+                    /// - +
+                    else if (bcenter == ba && ba != bb && bb != bd && bd != bc) {
+                        isoindices.push_back(v1id);
+                        isoindices.push_back(v2id);
+                        isoindices.push_back(v3id);
+                        isoindices.push_back(v4id);
+                    } else if (bcenter != ba && ba != bb && bb != bd && bd != bc) {
+                        isoindices.push_back(v1id);
+                        isoindices.push_back(v2id);
+                        isoindices.push_back(v3id);
+                        isoindices.push_back(v4id);
+                    } else if (ba == bb && bb == bc && bc == bd) {
+
+                    } else {
+                        std::cout << ba << " " << bb << " " << bc << " " << bd << std::endl;
+                    }
+                }
+
+            }
+        }
+    }
+}
+
 int main() try
 {
 //    cv::VideoCapture cap("rl.mp4");
-  //  cv::VideoCapture cap("bad_apple_small.mp4");
-//    vWidth = cap.get(cv::CAP_PROP_FRAME_WIDTH);
-//    vHeight = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
-//    std::cout << vWidth << " " << vHeight << std::endl;
-//
-//    if(!cap.isOpened()){
-//        std::cout << "Error opening video stream or file" << std::endl;
-//        return -1;
-//    }
+    cv::VideoCapture cap("bad_apple_small.mp4");
+    vWidth = cap.get(cv::CAP_PROP_FRAME_WIDTH);
+    vHeight = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+    std::cout << vWidth << " " << vHeight << std::endl;
+
+    if(!cap.isOpened()){
+        std::cout << "Error opening video stream or file" << std::endl;
+        return -1;
+    }
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
         sdl2_fail("SDL_Init: ");
@@ -298,14 +445,14 @@ int main() try
     bool running = true;
     while (running)
     {
-        usleep(1e6 / 30);
+        usleep(1e6 / 25);
         bool updated = false;
-//        cap >> frame;
-//        cvtColor(frame, grayscale, cv::COLOR_BGR2GRAY);
+        cap >> frame;
+        cvtColor(frame, grayscale, cv::COLOR_BGR2GRAY);
 
-////         If the frame is empty, break immediately
-//        if (frame.empty())
-//            break;
+//         If the frame is empty, break immediately
+        if (frame.empty())
+            break;
 
         for (SDL_Event event; SDL_PollEvent(&event);) switch (event.type)
         {
@@ -390,14 +537,8 @@ int main() try
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(unsigned int) * indices.size(), indices.data(), GL_DYNAMIC_DRAW);
         }
 
-        for (int i = 0; i < points_colors.size(); i++) {
-            auto& pc = points_colors[i];
-            auto& pp = points_poses[i];
-            auto res= f(pp.x, pp.y, time) * 255;
-            pc.color[0] = res;
-            pc.color[1] = 255 - res;
-            pc.color[2] = 255 - res;
-        }
+        paint_points(points_poses, points_colors, time);
+
         glBindBuffer(GL_ARRAY_BUFFER, colors_vbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(color_t) * points_colors.size(), points_colors.data(), GL_DYNAMIC_DRAW);
 
@@ -407,120 +548,11 @@ int main() try
         }
 
         std::vector<vec2> isopoints;
-        std::map<std::pair<int, std::pair<int, int>>, int> isopoints_indices;
         std::vector<unsigned int> isoindices;
 
-        for (int iso_border_index = 0; iso_border_index < iso_borders.size(); iso_border_index++) {
-            int border = 255.f * iso_borders[iso_border_index];
+        create_isolines(points_poses, points_colors, iso_borders, isoindices, isopoints);
 
-            for (int i = 0; i < res_x - 1; i++) {
-                for (int j = 0; j < res_y - 1; j++) {
-                    /// a bisoindices
-                    /// c d
-                    auto& a = points_colors[i * res_y + j].color[0];
-                    auto& b = points_colors[(i + 1) * res_y + j].color[0];
-                    auto& c = points_colors[i * res_y + (j + 1)].color[0];
-                    auto& d = points_colors[(i + 1) * res_y + (j + 1)].color[0];
 
-                    auto center = (points_colors[i * res_y + j].color[0]
-                                    + points_colors[(i + 1) * res_y + j].color[0]
-                                    + points_colors[i * res_y + (j + 1)].color[0]
-                                    + points_colors[(i + 1) * res_y + (j + 1)].color[0]) / 4;
-
-                    auto ba = a > border;
-                    auto bb = b > border;
-                    auto bc = c > border;
-                    auto bd = d > border;
-
-                    auto bcenter = center > border;
-
-                    if (ba == bb && bb == bc && bc == bd) {
-
-                    } else {
-
-                        auto &x = points_poses[i * res_y + j].x;
-                        auto &y = points_poses[i * res_y + j].y;
-                        auto &x2 = points_poses[(i + 1) * res_y + (j + 1)].x;
-                        auto &y2 = points_poses[(i + 1) * res_y + (j + 1)].y;
-
-                        ///   v1
-                        /// v2  v4
-                        ///   v3
-                        auto v1x = ((x - x2) * border + a * x2 - b * x) / (a - b);
-                        auto v2y = ((y - y2) * border + a * y2 - c * y) / (a - c);
-                        auto v3x = ((x - x2) * border + c * x2 - d * x) / (c - d);
-                        auto v4y = ((y - y2) * border + b * y2 - d * y) / (b - d);
-
-                        /// v1
-                        std::pair<int, std::pair<int, int>> v1p = {iso_border_index * 2, {i, j}};
-                        if (!isopoints_indices.contains(v1p)) {
-                            isopoints_indices[v1p] = isopoints.size();
-                            isopoints.push_back({v1x, y});
-                        }
-                        auto v1id = isopoints_indices[v1p];
-
-                        /// v2
-                        std::pair<int, std::pair<int, int>> v2p = {iso_border_index * 2 + 1, {i, j}};
-                        if (!isopoints_indices.contains(v2p)) {
-                            isopoints_indices[v2p] = isopoints.size();
-                            isopoints.push_back({x, v2y});
-                        }
-                        auto v2id = isopoints_indices[v2p];
-
-                        /// v3
-                        std::pair<int, std::pair<int, int>> v3p = {iso_border_index * 2, {i, j + 1}};
-                        if (!isopoints_indices.contains(v3p)) {
-                            isopoints_indices[v3p] = isopoints.size();
-                            isopoints.push_back({v3x, y2});
-                        }
-                        auto v3id = isopoints_indices[v3p];
-
-                        /// v4
-                        std::pair<int, std::pair<int, int>> v4p = {iso_border_index * 2 + 1, {i + 1, j}};
-                        if (!isopoints_indices.contains(v4p)) {
-                            isopoints_indices[v4p] = isopoints.size();
-                            isopoints.push_back({x2, v4y});
-                        }
-                        auto v4id = isopoints_indices[v4p];
-
-                        if (ba != bb && bb == bc && bc == bd) {
-                            isoindices.push_back(v1id);
-                            isoindices.push_back(v2id);
-                        } else if (bb != bc && bc == bd && bd == ba) {
-                            isoindices.push_back(v1id);
-                            isoindices.push_back(v4id);
-                        } else if (bc != bd && bd == ba && ba == bb) {
-                            isoindices.push_back(v3id);
-                            isoindices.push_back(v2id);
-                        } else if (bd != ba && ba == bb && bb == bc) {
-                            isoindices.push_back(v3id);
-                            isoindices.push_back(v4id);
-                        } else if (ba == bb && bb != bc && bc == bd) {
-                            isoindices.push_back(v2id);
-                            isoindices.push_back(v4id);
-                        } else if (ba == bc && ba != bb && bb == bd) {
-                            isoindices.push_back(v1id);
-                            isoindices.push_back(v3id);
-                        } else if (bcenter == ba && ba != bb && bb != bd && bd != bc) {
-                            isoindices.push_back(v1id);
-                            isoindices.push_back(v2id);
-                            isoindices.push_back(v3id);
-                            isoindices.push_back(v4id);
-                        } else if (bcenter != ba && ba != bb && bb != bd && bd != bc) {
-                            isoindices.push_back(v1id);
-                            isoindices.push_back(v2id);
-                            isoindices.push_back(v3id);
-                            isoindices.push_back(v4id);
-                        } else if (ba == bb && bb == bc && bc == bd) {
-
-                        } else {
-                            std::cout << ba << " " << bb << " " << bc << " " << bd << std::endl;
-                        }
-                    }
-
-                }
-            }
-        }
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, iso_ebo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(unsigned int) * isoindices.size(), isoindices.data(), GL_DYNAMIC_DRAW);
 

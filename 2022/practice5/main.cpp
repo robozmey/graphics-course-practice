@@ -41,13 +41,16 @@ uniform mat4 projection;
 
 layout (location = 0) in vec3 in_position;
 layout (location = 1) in vec3 in_normal;
+layout (location = 2) in vec2 in_texcoord;
 
 out vec3 normal;
+out vec2 texcoord;
 
 void main()
 {
     gl_Position = projection * transform * vec4(in_position, 1.0);
     normal = mat3(transform) * in_normal;
+    texcoord = in_texcoord;
 }
 )";
 
@@ -55,13 +58,16 @@ const char fragment_shader_source[] =
 R"(#version 330 core
 
 in vec3 normal;
+in vec2 texcoord;
 
 layout (location = 0) out vec4 out_color;
+uniform sampler2D sampler;
+uniform float time;
 
 void main()
 {
     float lightness = 0.5 + 0.5 * dot(normalize(normal), normalize(vec3(1.0, 2.0, 3.0)));
-    vec3 albedo = vec3(1.0);
+    vec3 albedo = vec3(texture(sampler, vec2(texcoord.x + time, texcoord.y)));
     out_color = vec4(lightness * albedo, 1.0);
 }
 )";
@@ -151,6 +157,8 @@ int main() try
 
     GLuint transform_location = glGetUniformLocation(program, "transform");
     GLuint projection_location = glGetUniformLocation(program, "projection");
+    GLuint color_texture_location = glGetUniformLocation(program, "sampler");
+    GLuint time_location = glGetUniformLocation(program, "time");
 
     std::string project_root = PROJECT_ROOT;
     std::string cow_texture_path = project_root + "/cow.png";
@@ -162,6 +170,88 @@ int main() try
 
     float angle_y = M_PI;
     float offset_z = -2.f;
+
+    GLuint vbo;
+    GLuint ebo;
+    GLuint vao;
+
+    glGenVertexArrays(1, &vao);
+    glGenBuffers(1, &vbo);
+    glGenBuffers(1, &ebo);
+
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(obj_data::vertex), (void*)0);
+
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(obj_data::vertex), (void*)(3*sizeof(float)));
+
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(obj_data::vertex), (void*)(6*sizeof(float)));
+
+    glBufferData(GL_ARRAY_BUFFER, cow.vertices.size() * sizeof(obj_data::vertex), cow.vertices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, cow.indices.size() * sizeof(uint32_t), cow.indices.data(), GL_STATIC_DRAW);
+
+    size_t size = 512;
+    GLuint texture;
+    glActiveTexture(GL_TEXTURE0);
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+
+    std::vector<std::uint32_t> pixels(size * size);
+    for (int i = 0; i < size; i++)
+        for (int j = 0; j < size; j++)
+            pixels[i*size+j] = ((i+j) % 2 == 0 ? 0xFF000000u : 0xFFFFFFFFu);
+    glTexImage2D(GL_TEXTURE_2D,
+                 0,
+                 GL_RGBA8,
+                 size,
+                 size, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+
+    std::vector<std::uint32_t> pixels1(size / 2 * size / 2, 0xFF0000FFu);
+    glTexImage2D(GL_TEXTURE_2D,
+                 1,
+                 GL_RGBA8,
+                 size/2,
+                 size/2, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels1.data());
+    std::vector<std::uint32_t> pixels2(size / 4 * size / 4, 0xFF00FF00u);
+    glTexImage2D(GL_TEXTURE_2D,
+                 2,
+                 GL_RGBA8,
+                 size/4,
+                 size/4, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels2.data());
+    std::vector<std::uint32_t> pixels3(size / 8 * size / 8, 0xFFFF0000u);
+    glTexImage2D(GL_TEXTURE_2D,
+                 3,
+                 GL_RGBA8,
+                 size/8,
+                 size/8, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels3.data());
+
+
+    GLuint true_texture;
+    glActiveTexture(GL_TEXTURE1);
+    glGenTextures(1, &true_texture);
+    glBindTexture(GL_TEXTURE_2D, true_texture);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+
+    int x_size, y_size, n;
+    unsigned char *data = stbi_load(cow_texture_path.c_str(), &x_size, &y_size, &n, 4);
+    glTexImage2D(GL_TEXTURE_2D,
+                 0,
+                 GL_RGBA8,
+                 x_size,
+                 y_size, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
 
     std::map<SDL_Keycode, bool> button_down;
 
@@ -230,12 +320,22 @@ int main() try
         glUseProgram(program);
         glUniformMatrix4fv(transform_location, 1, GL_TRUE, transform);
         glUniformMatrix4fv(projection_location, 1, GL_TRUE, projection);
+        glUniform1i(color_texture_location, 1);
+        glUniform1f(time_location, time / 5);
+
+
+        glBindVertexArray(vao);
+        glBindBuffer(GL_VERTEX_ARRAY, vbo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+
+        glDrawElements(GL_TRIANGLES, cow.indices.size(), GL_UNSIGNED_INT, (void*)0);
 
         SDL_GL_SwapWindow(window);
     }
 
     SDL_GL_DeleteContext(gl_context);
     SDL_DestroyWindow(window);
+    stbi_image_free(data);
 }
 catch (std::exception const & e)
 {
