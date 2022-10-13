@@ -318,8 +318,8 @@ void create_isolines(const std::vector<vec2>& points_poses,
 
 int main() try
 {
-//    cv::VideoCapture cap("rl.mp4");
-    cv::VideoCapture cap("bad_apple_small.mp4");
+    cv::VideoCapture cap("rl.mp4");
+//    cv::VideoCapture cap("bad_apple_small.mp4");
     vWidth = cap.get(cv::CAP_PROP_FRAME_WIDTH);
     vHeight = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
     std::cout << vWidth << " " << vHeight << std::endl;
