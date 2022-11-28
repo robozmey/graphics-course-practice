@@ -28,7 +28,7 @@
 #include <glm/gtx/string_cast.hpp>
 
 #include "obj_parser.hpp"
-#include "stb_image.h"
+#include "stb_image.h" 	16 	0 	50
 
 std::string to_string(std::string_view str)
 {
@@ -73,6 +73,8 @@ uniform vec3 light_direction;
 uniform vec3 bbox_min;
 uniform vec3 bbox_max;
 
+uniform sampler3D sampler;
+
 layout (location = 0) out vec4 out_color;
 
 void sort(inout float x, inout float y)
@@ -111,9 +113,60 @@ const float PI = 3.1415926535;
 
 in vec3 position;
 
+vec3 to_texcoords(vec3 p) {
+    return (p - bbox_min) / (bbox_max - bbox_min);
+}
+
 void main()
 {
-    out_color = vec4(1.0, 0.5, 0.5, 1.0);
+    vec3 direction = -normalize(camera_position - position);
+    vec2 tmintmax = intersect_bbox(camera_position, direction);
+    float tmin = tmintmax.x;
+    tmin = max(0, tmin);
+    float tmax = tmintmax.y;
+
+    vec3 absorption = vec3(1);
+    vec3 scattering = vec3(4.0, 1.0, 10);
+    vec3 extinction = absorption + scattering;
+    vec3 light_color = vec3(16.0);
+
+    vec3 color = vec3(0);
+
+    vec3 optical_depth = vec3(0);
+
+    float N = 64;
+    float dt = (tmax - tmin) / N;
+    for (int i = 0; i < N; i++) {
+        float t = tmin + (i + 0.5) * dt;
+        vec3 p = camera_position + t * direction;
+        vec3 texcoords = to_texcoords(p);
+        float density = texture(sampler, texcoords).r;
+        optical_depth += extinction * density * dt;
+
+        vec2 light_tmintmax = intersect_bbox(p, light_direction);
+        float light_tmin = light_tmintmax.x;
+        light_tmin = max(0, light_tmin);
+        float light_tmax = light_tmintmax.y;
+        vec3 light_optical_depth = vec3(0);
+        float light_N = 16;
+        float light_dt = (light_tmax - light_tmin) / light_N;
+        for (int j = 0; j < light_N; j++) {
+            float t = light_tmin + (j + 0.5) * light_dt;
+            vec3 light_p = p + t * light_direction;
+            vec3 texcoords = to_texcoords(light_p);
+            float light_density = texture(sampler, texcoords).r;
+
+            light_optical_depth += extinction * light_density * light_dt;
+        }
+
+        color += light_color * exp(-light_optical_depth) * exp(-optical_depth) * dt * density * scattering / 4.0 / PI;
+    }
+
+//    float opacity = 1.0 - exp(-optical_depth);
+
+//    vec3 color = vec3(48.0/255.0, 213.0/255.0, 200.0/255.0)/2;
+    float alpha = 1;
+    out_color = vec4(color, alpha);
 }
 )";
 
@@ -236,6 +289,7 @@ int main() try
     GLuint bbox_max_location = glGetUniformLocation(program, "bbox_max");
     GLuint camera_position_location = glGetUniformLocation(program, "camera_position");
     GLuint light_direction_location = glGetUniformLocation(program, "light_direction");
+    GLuint sampler_location = glGetUniformLocation(program, "sampler");
 
     GLuint vao, vbo, ebo;
     glGenVertexArrays(1, &vao);
@@ -257,6 +311,28 @@ int main() try
 
     const glm::vec3 cloud_bbox_min{-2.f, -1.f, -1.f};
     const glm::vec3 cloud_bbox_max{ 2.f,  1.f,  1.f};
+
+    GLuint texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_3D, texture);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri( GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri( GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri( GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    {
+        std::vector<char> pixels(128 * 64 * 64);
+        std::ifstream input(cloud_data_path, std::ios::binary);
+        input.read(pixels.data(), pixels.size());
+
+        glTexImage3D(GL_TEXTURE_3D,
+                     0,
+                     GL_R8,
+                     128, 64, 64,
+                     0,
+                     GL_RED, GL_UNSIGNED_BYTE, pixels.data());
+    }
+
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
@@ -323,7 +399,7 @@ int main() try
         if (button_down[SDLK_s])
             view_angle += 2.f * dt;
 
-        glClearColor(0.8f, 0.8f, 0.9f, 0.f);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glEnable(GL_DEPTH_TEST);
@@ -357,6 +433,7 @@ int main() try
         glUniform3fv(bbox_max_location, 1, reinterpret_cast<const float *>(&cloud_bbox_max));
         glUniform3fv(camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
         glUniform3fv(light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
+        glUniform1i(sampler_location, 0);
 
         glBindVertexArray(vao);
         glDrawElements(GL_TRIANGLES, std::size(cube_indices), GL_UNSIGNED_INT, nullptr);
