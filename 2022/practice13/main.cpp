@@ -46,29 +46,36 @@ void glew_fail(std::string_view message, GLenum error)
 }
 
 const char vertex_shader_source[] =
-R"(#version 330 core
+        R"(#version 330 core
 
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
 
+uniform mat4x3 bones[64];
+
 layout (location = 0) in vec3 in_position;
 layout (location = 1) in vec3 in_normal;
 layout (location = 2) in vec2 in_texcoord;
+layout (location = 3) in ivec4 in_joints;
+layout (location = 4) in vec4 in_weights;
 
 out vec3 normal;
 out vec2 texcoord;
+out vec4 weights;
 
 void main()
 {
-    gl_Position = projection * view * model * vec4(in_position, 1.0);
-    normal = mat3(model) * in_normal;
+    mat4x3 average = bones[in_joints[0]] * in_weights[0] + bones[in_joints[1]] * in_weights[1] + bones[in_joints[2]] * in_weights[2] + bones[in_joints[3]] * in_weights[3];
+    gl_Position = projection * view * mat4(average) * model * vec4(in_position, 1.0);
+    normal = mat3(average) * mat3(model) * in_normal;
     texcoord = in_texcoord;
+    weights = in_weights;
 }
 )";
 
 const char fragment_shader_source[] =
-R"(#version 330 core
+        R"(#version 330 core
 
 uniform sampler2D albedo;
 uniform vec4 color;
@@ -80,6 +87,7 @@ layout (location = 0) out vec4 out_color;
 
 in vec3 normal;
 in vec2 texcoord;
+in vec4 weights;
 
 void main()
 {
@@ -152,11 +160,11 @@ int main() try
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 
-    SDL_Window * window = SDL_CreateWindow("Graphics course practice 11",
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
-        800, 600,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED);
+    SDL_Window * window = SDL_CreateWindow("Graphics course practice 13",
+                                           SDL_WINDOWPOS_CENTERED,
+                                           SDL_WINDOWPOS_CENTERED,
+                                           800, 600,
+                                           SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED);
 
     if (!window)
         sdl2_fail("SDL_CreateWindow: ");
@@ -185,6 +193,7 @@ int main() try
     GLuint color_location = glGetUniformLocation(program, "color");
     GLuint use_texture_location = glGetUniformLocation(program, "use_texture");
     GLuint light_direction_location = glGetUniformLocation(program, "light_direction");
+    GLuint bones_location = glGetUniformLocation(program, "bones");
 
     const std::string project_root = PROJECT_ROOT;
     const std::string model_path = project_root + "/wolf/Wolf-Blender-2.82a.gltf";
@@ -258,6 +267,7 @@ int main() try
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
     float time = 0.f;
+    float animation_interpolation = 0;
 
     std::map<SDL_Keycode, bool> button_down;
 
@@ -273,28 +283,28 @@ int main() try
     while (running)
     {
         for (SDL_Event event; SDL_PollEvent(&event);) switch (event.type)
-        {
-        case SDL_QUIT:
-            running = false;
-            break;
-        case SDL_WINDOWEVENT: switch (event.window.event)
             {
-            case SDL_WINDOWEVENT_RESIZED:
-                width = event.window.data1;
-                height = event.window.data2;
-                glViewport(0, 0, width, height);
-                break;
+                case SDL_QUIT:
+                    running = false;
+                    break;
+                case SDL_WINDOWEVENT: switch (event.window.event)
+                    {
+                        case SDL_WINDOWEVENT_RESIZED:
+                            width = event.window.data1;
+                            height = event.window.data2;
+                            glViewport(0, 0, width, height);
+                            break;
+                    }
+                    break;
+                case SDL_KEYDOWN:
+                    button_down[event.key.keysym.sym] = true;
+                    if (event.key.keysym.sym == SDLK_SPACE)
+                        paused = !paused;
+                    break;
+                case SDL_KEYUP:
+                    button_down[event.key.keysym.sym] = false;
+                    break;
             }
-            break;
-        case SDL_KEYDOWN:
-            button_down[event.key.keysym.sym] = true;
-            if (event.key.keysym.sym == SDLK_SPACE)
-                paused = !paused;
-            break;
-        case SDL_KEYUP:
-            button_down[event.key.keysym.sym] = false;
-            break;
-        }
 
         if (!running)
             break;
@@ -321,6 +331,17 @@ int main() try
         if (button_down[SDLK_s])
             view_angle += 2.f * dt;
 
+        float speed = 1;
+        if (button_down[SDLK_LEFT])
+            animation_interpolation -= speed * dt;
+        if (button_down[SDLK_RIGHT])
+            animation_interpolation += speed * dt;
+
+        if (animation_interpolation > 1)
+            animation_interpolation = 1;
+        if (animation_interpolation < 0)
+            animation_interpolation = 0;
+
         glClearColor(0.8f, 0.8f, 1.f, 0.f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -330,6 +351,8 @@ int main() try
 
         float near = 0.1f;
         float far = 100.f;
+
+        float scale = 0.75 + cos(time) * 0.25;
 
         glm::mat4 model(1.f);
 
@@ -345,11 +368,42 @@ int main() try
 
         glm::vec3 light_direction = glm::normalize(glm::vec3(1.f, 2.f, 3.f));
 
+        std::vector<glm::mat4x3> bones(input_model.bones.size(), glm::mat4x3(1));
+
+        auto run_animation = input_model.animations.at("01_Run");
+        auto walk_animation = input_model.animations.at("02_walk");
+
+        auto run_frame = std::fmod(time, run_animation.max_time);
+        auto walk_frame = std::fmod(time, walk_animation.max_time);
+
+        for (int bone_index = 0; bone_index < input_model.bones.size(); bone_index++) {
+            auto run_translation = run_animation.bones[bone_index].translation(run_frame);
+            auto walk_translation = walk_animation.bones[bone_index].translation(walk_frame);
+            auto translation = glm::translate(glm::mat4(1.f), glm::lerp((run_translation), (walk_translation), animation_interpolation));
+
+            auto run_rotation = run_animation.bones[bone_index].rotation(run_frame);
+            auto walk_rotation = walk_animation.bones[bone_index].rotation(walk_frame);
+            auto rotation = glm::toMat4(glm::slerp(run_rotation, walk_rotation, animation_interpolation));
+
+            auto run_scale = glm::scale(glm::mat4(1.f), run_animation.bones[bone_index].scale(run_frame));
+            auto walk_scale = glm::scale(glm::mat4(1.f), walk_animation.bones[bone_index].scale(walk_frame));
+            auto scale = glm::toMat4(glm::slerp(glm::quat_cast(run_scale), glm::quat_cast(walk_scale), animation_interpolation));
+            glm::mat4 transform = translation * rotation * scale;
+            bones[bone_index] = transform;
+            if (input_model.bones[bone_index].parent != -1) {
+                bones[bone_index] = bones[input_model.bones[bone_index].parent] * transform;
+            }
+        }
+        for (int bone_index = 0; bone_index < input_model.bones.size(); bone_index++) {
+            bones[bone_index] = bones[bone_index] * input_model.bones[bone_index].inverse_bind_matrix;
+        }
+
         glUseProgram(program);
         glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
         glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
         glUniformMatrix4fv(projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
         glUniform3fv(light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
+        glUniformMatrix4x3fv(bones_location, input_model.bones.size(), GL_FALSE, reinterpret_cast<float *>(bones.data()));
 
         auto draw_meshes = [&](bool transparent)
         {
