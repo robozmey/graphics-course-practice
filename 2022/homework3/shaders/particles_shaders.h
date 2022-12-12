@@ -71,3 +71,29 @@ void main()
     out_color = col;
 }
 )";
+
+const int PARTICLES_MAX_COUNT = 256;
+
+struct particle
+{
+    glm::vec3 position;
+    float size;
+    glm::vec3 velocity;
+    float rotation;
+    float angular_velocity;
+
+    particle(std::default_random_engine& rng) {
+        position.x = std::uniform_real_distribution<float>{-0.3f, 0.3f}(rng);
+        position.y = 0.9f;
+        position.z = std::uniform_real_distribution<float>{-0.3f, 0.3f}(rng);
+
+        size = std::uniform_real_distribution<float>{0.01f, 0.015f}(rng);
+
+        velocity.x = std::uniform_real_distribution<float>{-0.15f, 0.15f}(rng);
+        velocity.y = std::uniform_real_distribution<float>{-0.35f, -0.2}(rng);
+        velocity.z = std::uniform_real_distribution<float>{-0.15f, 0.15f}(rng);
+
+        rotation = 0;
+        angular_velocity = std::uniform_real_distribution<float>{0, 0.5f}(rng);
+    }
+};
