@@ -28,6 +28,7 @@ const char environment_fragment_shader_source[] =
         R"(#version 330 core
 
 uniform vec3 camera_position;
+uniform float ambient_light_intensity;
 
 uniform sampler2D environment_texture;
 
@@ -47,6 +48,6 @@ void main()
 
     vec3 environment_albedo = texture(environment_texture, vec2(x, y)).rgb;
 
-    out_color = vec4(environment_albedo, 1);
+    out_color = vec4(environment_albedo * ambient_light_intensity, 1);
 }
 )";

@@ -31,6 +31,8 @@ uniform vec3 camera_position;
 uniform vec3 sphere_center;
 uniform float sphere_radius;
 
+uniform float ambient_light_intensity;
+
 uniform sampler2D environment_texture;
 
 in vec3 position;
@@ -72,8 +74,13 @@ void main()
 
     vec3 final_color = (lightness * albedo + environment_albedo) / 2;
 
+    float n = 2.7;
+    float R0 = pow((1 - n) * (1 + n), 2);
+    float costheta = dot(normalize(normal), normalize(camera_direction));
 
-    out_color = vec4(environment_albedo, 0.2);
+    float opacity = (R0 + (1 - R0) * pow(1 - costheta, 5));
+
+    out_color = vec4(environment_albedo * ambient_light_intensity / 3, opacity);
 
 //    out_color = vec4(lightness * albedo, 1.0);
 
@@ -102,7 +109,20 @@ std::pair<std::vector<vertex>, std::vector<std::uint32_t>> generate_sphere(float
             vertex.normal = {std::cos(lat) * std::cos(lon), std::sin(lat), std::cos(lat) * std::sin(lon)};
             vertex.position = vertex.normal * radius;
             vertex.tangent = {-std::cos(lat) * std::sin(lon), 0.f, std::cos(lat) * std::cos(lon)};
+        }
+    }
 
+    if (create_semisphere) {
+        for (int longitude = 0; longitude <= 4 * quality; ++longitude)
+        {
+            float lat = (0 * glm::pi<float>()) / (2.f * quality);
+            float lon = (longitude * glm::pi<float>()) / (2.f * quality);
+
+            auto & vertex = vertices.emplace_back();
+            vertex.normal = {std::cos(lat) * std::cos(lon), std::sin(lat), std::cos(lat) * std::sin(lon)};
+            vertex.position = vertex.normal * radius;
+            vertex.normal = {0, 1, 0};
+            vertex.tangent = {0, 0, 1};
         }
     }
 
@@ -125,19 +145,19 @@ std::pair<std::vector<vertex>, std::vector<std::uint32_t>> generate_sphere(float
 //                vertex.tangent = {i * radius, 0, j * radius};
 //            }
 //        }
-//        indices.insert(indices.end(), {k, k + 2, k + 1});
+//        indices.insert(indices.end(), {k, k + 1, k + 2});
 //        indices.insert(indices.end(), {k + 2, k + 1, k + 3});
 
         for (int longitude = 0; longitude < 4 * quality; ++longitude)
         {
-            std::uint32_t i0 = (0 + 0) * (4 * quality + 1) + (longitude + 0);
-            std::uint32_t i1 = (0 + 0) * (4 * quality + 1) + (longitude + 1);
+            std::uint32_t i0 = (quality+1 + 0) * (4 * quality + 1) + (longitude + 0);
+            std::uint32_t i1 = (quality+1 + 0) * (4 * quality + 1) + (longitude + 1);
 
-            indices.insert(indices.end(), {i0, i1, 0});
+            indices.insert(indices.end(), {i1, i0, center_index});
         }
     }
 
-    for (int latitude = 0; latitude < 2 * quality*(!create_semisphere); ++latitude)
+    for (int latitude = 0; latitude < quality + quality*(!create_semisphere); ++latitude)
     {
         for (int longitude = 0; longitude < 4 * quality; ++longitude)
         {

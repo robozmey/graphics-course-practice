@@ -15,6 +15,7 @@
 #include <vector>
 #include <map>
 #include <cmath>
+#include <thread>
 
 #define GLM_FORCE_SWIZZLE
 #define GLM_ENABLE_EXPERIMENTAL
@@ -34,6 +35,7 @@
 #include "shaders/wolf_shaders.h"
 #include "shaders/particles_shaders.h"
 #include "shaders/mist_shaders.h"
+#include "shaders/shadow_shaders.h"
 
 std::string to_string(std::string_view str)
 {
@@ -172,6 +174,7 @@ int main() try
     GLuint sphere_environment_texture_location = glGetUniformLocation(sphere_program, "environment_texture");
     GLuint sphere_sphere_center_location = glGetUniformLocation(sphere_program, "sphere_center");
     GLuint sphere_sphere_radius_location = glGetUniformLocation(sphere_program, "sphere_radius");
+    GLuint sphere_ambient_light_intensity_location = glGetUniformLocation(sphere_program, "ambient_light_intensity");
 
     // ENVIRONMENT
 
@@ -183,6 +186,18 @@ int main() try
     GLuint environment_shader_projection_location = glGetUniformLocation(environment_program, "projection");
     GLuint environment_shader_camera_position_location = glGetUniformLocation(environment_program, "camera_position");
     GLuint environment_shader_environment_texture_location = glGetUniformLocation(environment_program, "environment_texture");
+    GLuint environment_shader_ambient_light_intensity_location = glGetUniformLocation(environment_program, "ambient_light_intensity");
+
+    // SHADOW
+    auto shadow_vertex_shader = create_shader(GL_VERTEX_SHADER, shadow_vertex_shader_source);
+    auto shadow_fragment_shader = create_shader(GL_FRAGMENT_SHADER, shadow_fragment_shader_source);
+    auto shadow_program = create_program(shadow_vertex_shader, shadow_fragment_shader);
+
+    GLuint shadow_model_location = glGetUniformLocation(shadow_program, "model");
+    GLuint shadow_transform_location = glGetUniformLocation(shadow_program, "transform");
+    GLuint shadow_projection_location = glGetUniformLocation(shadow_program, "shadow_projection");
+    GLuint shadow_use_bones_location = glGetUniformLocation(shadow_program, "use_bones");
+    GLuint shadow_bones_location = glGetUniformLocation(shadow_program, "bones");
 
     // WOLF
 
@@ -202,7 +217,10 @@ int main() try
     GLuint wolf_bones_location = glGetUniformLocation(wolf_program, "bones");
     GLuint wolf_mist_radius_location = glGetUniformLocation(wolf_program, "mist_radius");
     GLuint wolf_mist_center_location = glGetUniformLocation(wolf_program, "mist_center");
+    GLuint wolf_mist_color_location = glGetUniformLocation(wolf_program, "mist_color");
     GLuint wolf_use_bones_location = glGetUniformLocation(wolf_program, "use_bones");
+    GLuint wolf_shadow_map_location = glGetUniformLocation(wolf_program, "shadow_map");
+    GLuint wolf_shadow_projection_location = glGetUniformLocation(wolf_program, "shadow_projection");
 
     // PARTICLES
 
@@ -225,11 +243,11 @@ int main() try
 
     GLuint mist_view_location = glGetUniformLocation(mist_program, "view");
     GLuint mist_projection_location = glGetUniformLocation(mist_program, "projection");
-    GLuint mist_bbox_min_location = glGetUniformLocation(mist_program, "bbox_min");
-    GLuint mist_bbox_max_location = glGetUniformLocation(mist_program, "bbox_max");
+    GLuint mist_mist_radius_location = glGetUniformLocation(mist_program, "mist_radius");
+    GLuint mist_mist_center_location = glGetUniformLocation(mist_program, "mist_center");
+    GLuint mist_mist_color_location = glGetUniformLocation(mist_program, "mist_color");
     GLuint mist_camera_position_location = glGetUniformLocation(mist_program, "camera_position");
     GLuint mist_light_direction_location = glGetUniformLocation(mist_program, "light_direction");
-    GLuint mist_sampler_location = glGetUniformLocation(mist_program, "sampler");
 
     // ENVIRONMENT
     GLuint environment_vao;
@@ -244,7 +262,7 @@ int main() try
     glGenBuffers(1, &lower_sphere_ebo);
     GLuint lower_sphere_index_count;
     {
-        auto [vertices, indices] = generate_sphere(1, 16, true);
+        auto [vertices, indices] = generate_sphere(1.05, 16, true);
 
         glBindBuffer(GL_ARRAY_BUFFER, lower_sphere_vbo);
         glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(vertices[0]), vertices.data(), GL_STATIC_DRAW);
@@ -287,9 +305,36 @@ int main() try
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(vertex), (void *)offsetof(vertex, normal));
 
     std::string project_root = PROJECT_ROOT;
-    GLuint albedo_texture = load_texture(project_root + "/textures/brick_albedo.jpg");
-    GLuint normal_texture = load_texture(project_root + "/textures/brick_normal.jpg");
     GLuint environment_texture = load_texture(project_root + "/textures/environment_map.jpg");
+
+    // SHADOW
+    GLsizei shadow_map_resolution = 1024;
+
+    GLuint shadow_map;
+    glGenTextures(1, &shadow_map);
+    glBindTexture(GL_TEXTURE_2D, shadow_map);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, shadow_map_resolution, shadow_map_resolution, 0, GL_RGBA, GL_FLOAT, nullptr);
+
+    GLuint shadow_fbo;
+    glGenFramebuffers(1, &shadow_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, shadow_fbo);
+    glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, shadow_map, 0);
+    if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        throw std::runtime_error("Incomplete framebuffer!");
+
+    GLuint shadow_rbo;
+    glGenRenderbuffers(1, &shadow_rbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, shadow_rbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, shadow_map_resolution, shadow_map_resolution);
+    glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, shadow_rbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+    GLuint shadow_vao;
+    glGenVertexArrays(1, &shadow_vao);
 
     // WOLF
     const std::string wolf_model_path = project_root + "/Macarena/Macarena.gltf"; //"/wolf/Wolf-Blender-2.82a.gltf";
@@ -408,7 +453,17 @@ int main() try
     glm::vec3 camera_rotation = glm::vec3(0.5, 0, 0);
     glm::vec3 camera_direction, side_direction;
 
+    float ambient_light_intensity = 1;
+
     glPointSize(5.f);
+
+//    auto play_macarena = [](std::string project_root){
+//        std::string audio_command = "cvlc " + project_root + "/audio/macarena.mp3";
+//        std::system(audio_command.c_str());
+//    };
+//    std::thread macarena_thread(play_macarena, project_root);
+
+    bool pause = false;
 
     bool running = true;
     while (running)
@@ -468,26 +523,36 @@ int main() try
         if (button_down[SDLK_d])
             camera_position -= side_direction;
 
+        if (button_down[SDLK_PAGEUP] && ambient_light_intensity < 1)
+            ambient_light_intensity += 0.01;
+        if (button_down[SDLK_PAGEDOWN] && ambient_light_intensity > 0)
+            ambient_light_intensity -= 0.01;
 
-        float A = 0, C = 0, D = 0;
-        for (auto &p: particles) {
-            p.velocity.y += dt * A;
+        if (button_down[SDLK_SPACE])
+            pause = !pause;
 
-            p.position += p.velocity * dt;
+        if (!pause) {
+            float A = 0, C = 0, D = 0;
+            for (auto &p: particles) {
+                p.velocity.y += dt * A;
 
-            p.velocity *= exp(-C * dt);
+                p.position += p.velocity * dt;
 
-            p.size *= exp(-D * dt);
+                p.velocity *= exp(-C * dt);
 
-            p.rotation += p.angular_velocity * dt;
+                p.size *= exp(-D * dt);
 
-            if (p.position.y < 0 || p.position.x * p.position.x + p.position.y * p.position.y + p.position.z * p.position.z >= 1) {
-                p = particle(rng);
+                p.rotation += p.angular_velocity * dt;
+
+                if (p.position.y < 0 ||
+                    p.position.x * p.position.x + p.position.y * p.position.y + p.position.z * p.position.z >= 1) {
+                    p = particle(rng);
+                }
             }
-        }
-        if (particles.size() < PARTICLES_MAX_COUNT) {
-            particle p(rng);
-            particles.push_back(p);
+            if (particles.size() < PARTICLES_MAX_COUNT) {
+                particle p(rng);
+                particles.push_back(p);
+            }
         }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -511,25 +576,62 @@ int main() try
         glm::mat4 projection = glm::mat4(1.f);
         projection = glm::perspective(glm::pi<float>() / 2.f, (1.f * width) / height, near, far);
 
-        glm::vec3 light_direction = glm::normalize(glm::vec3(1.f, 2.f, 3.f));
+        glm::vec3 light_direction = glm::normalize(glm::vec3(0, 1.f, std::sin(time * 0.5f)));
 
         glm::vec3 camera_position = (glm::inverse(view) * glm::vec4(0.f, 0.f, 0.f, 1.f)).xyz();
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, albedo_texture);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, normal_texture);
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, environment_texture);
+        glm::vec3 light_z = glm::normalize(-light_direction);
+        glm::vec3 light_x = glm::normalize(glm::cross(light_z, {0.f, 1.f, 0.f}));
+        glm::vec3 light_y = glm::normalize(glm::cross(light_x, light_z));
+        float shadow_scale = 2.f;
+        float shadow_scale_x = -1e8;
+        float shadow_scale_y = -1e8;
+        float shadow_scale_z = -1e8;
+
+        float bounding_box[3][2] = {{-2, 2}, {-2, 2}, {-2, 2}};
+
+        for (int i = 0; i < 8; i++) {
+            glm::vec3 V = glm::vec3(bounding_box[0][i / 4], bounding_box[1][i / 2 % 2], bounding_box[2][i % 2]);
+
+            float tmp;
+            tmp = glm::dot(V, light_x);
+            shadow_scale_x = std::max(shadow_scale_x, std::abs(tmp));
+
+            tmp = glm::dot(V, light_y);
+            shadow_scale_y = std::max(shadow_scale_y, std::abs(tmp));
+
+            tmp = glm::dot(V, light_z);
+            shadow_scale_z = std::max(shadow_scale_z, std::abs(tmp));
+        }
+
+//        std::cout << shadow_scale_x << std::endl;
+
+        glm::mat4 transform = glm::mat4(1.f);
+        for (size_t i = 0; i < 3; ++i)
+        {
+            transform[i][0] = shadow_scale_x * light_x[i];
+            transform[i][1] = shadow_scale_y * light_y[i];
+            transform[i][2] = shadow_scale_z * light_z[i];
+            transform[i][3] = 0;
+        }
+
+        transform = glm::transpose(transform);
+        transform = glm::inverse(transform);
+
+        auto light_projection = transform;
 
         // ENVIRONMENT
         {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, environment_texture);
+
             glUseProgram(environment_program);
             glUniformMatrix4fv(environment_shader_view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
             glUniformMatrix4fv(environment_shader_projection_location, 1, GL_FALSE,
                                reinterpret_cast<float *>(&projection));
             glUniform3fv(environment_shader_camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
-            glUniform1i(environment_shader_environment_texture_location, 2);
+            glUniform1i(environment_shader_environment_texture_location, 0);
+            glUniform1f(environment_shader_ambient_light_intensity_location, ambient_light_intensity);
 
             glBindVertexArray(environment_vao);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -539,31 +641,22 @@ int main() try
 
         // WOLF
         {
-            glActiveTexture(GL_TEXTURE0);
-            float animation_interpolation = abs(cos(time / 2));
-
             std::vector<glm::mat4x3> bones(wolf_input_model.bones.size(), glm::mat4x3(1));
 
-            auto run_animation = (*wolf_input_model.animations.begin()).second;
-            auto walk_animation = (*wolf_input_model.animations.begin()).second;
+            auto macarena_animation = (*wolf_input_model.animations.begin()).second;
 
-            auto run_frame = std::fmod(time, run_animation.max_time);
-            auto walk_frame = std::fmod(time, walk_animation.max_time);
+            float macarena_time = 9.348;
+
+            float slow_factor = macarena_animation.max_time / macarena_time;
+
+            auto run_frame = std::fmod(time * slow_factor, macarena_animation.max_time);
 
             for (int bone_index = 0; bone_index < wolf_input_model.bones.size(); bone_index++) {
-                auto run_translation = run_animation.bones[bone_index].translation(run_frame);
-                auto walk_translation = walk_animation.bones[bone_index].translation(walk_frame);
-                auto translation = glm::translate(glm::mat4(1.f), glm::lerp((run_translation), (walk_translation),
-                                                                            animation_interpolation));
+                auto translation = glm::translate(glm::mat4(1.f), macarena_animation.bones[bone_index].translation(run_frame));
 
-                auto run_rotation = run_animation.bones[bone_index].rotation(run_frame);
-                auto walk_rotation = walk_animation.bones[bone_index].rotation(walk_frame);
-                auto rotation = glm::toMat4(glm::slerp(run_rotation, walk_rotation, animation_interpolation));
+                auto rotation = glm::toMat4(macarena_animation.bones[bone_index].rotation(run_frame));
 
-                auto run_scale = glm::scale(glm::mat4(1.f), run_animation.bones[bone_index].scale(run_frame));
-                auto walk_scale = glm::scale(glm::mat4(1.f), walk_animation.bones[bone_index].scale(walk_frame));
-                auto scale = glm::toMat4(
-                        glm::slerp(glm::quat_cast(run_scale), glm::quat_cast(walk_scale), animation_interpolation));
+                auto scale = glm::scale(glm::mat4(1.f), macarena_animation.bones[bone_index].scale(run_frame));
                 glm::mat4 transform = translation * rotation * scale;
                 bones[bone_index] = transform;
                 if (wolf_input_model.bones[bone_index].parent != -1) {
@@ -573,18 +666,6 @@ int main() try
             for (int bone_index = 0; bone_index < wolf_input_model.bones.size(); bone_index++) {
                 bones[bone_index] = bones[bone_index] * wolf_input_model.bones[bone_index].inverse_bind_matrix;
             }
-
-            glUseProgram(wolf_program);
-            glUniform3f(wolf_mist_center_location, 0, 0, 0);
-            glUniform1f(wolf_mist_radius_location, 1);
-            glUniform1f(wolf_use_bones_location, 1);
-            glUniformMatrix4fv(wolf_model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
-            glUniformMatrix4fv(wolf_view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
-            glUniformMatrix4fv(wolf_projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
-            glUniform3fv(wolf_light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
-            glUniform3fv(wolf_camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
-            glUniformMatrix4x3fv(wolf_bones_location, wolf_input_model.bones.size(), GL_FALSE,
-                                 reinterpret_cast<float *>(bones.data()));
 
             auto draw_meshes = [&](bool transparent) {
                 for (auto const &mesh: meshes) {
@@ -615,46 +696,98 @@ int main() try
                                    reinterpret_cast<void *>(mesh.indices.view.offset));
                 }
             };
-            draw_meshes(false);
-            glDepthMask(GL_FALSE);
-            draw_meshes(true);
-            glDepthMask(GL_TRUE);
-        }
 
-        // LOWER SEMISPHERE
-        {
-            glm::vec4 lower_sphere_color(0.5, 0.5, 0.5, 1);
+            // WOLF SHADOW
+            {
+                glUseProgram(shadow_program);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, shadow_fbo);
+                glViewport(0, 0, shadow_map_resolution, shadow_map_resolution);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                glEnable(GL_DEPTH_TEST);
+                glCullFace(GL_FRONT);
+                glEnable(GL_CULL_FACE);
+                glUniform1f(shadow_use_bones_location, 1);
+                glUniformMatrix4fv(shadow_projection_location, 1, GL_FALSE,
+                                   reinterpret_cast<float *>(&light_projection));
+                glUniformMatrix4x3fv(shadow_bones_location, wolf_input_model.bones.size(), GL_FALSE,
+                                     reinterpret_cast<float *>(bones.data()));
+                glCullFace(GL_BACK);
 
-//            glEnable(GL_BLEND);
-//            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_FRONT);
-            glUseProgram(wolf_program);
-            glUniform3f(wolf_mist_center_location, 0, 0, 0);
-            glUniform1f(wolf_mist_radius_location, 1);
-            glUniform1f(wolf_use_bones_location, 0);
-            glUniformMatrix4fv(wolf_model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
-            glUniformMatrix4fv(wolf_view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
-            glUniformMatrix4fv(wolf_projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
-            glUniform3fv(wolf_light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
-            glUniform3fv(wolf_camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
-            glUniform1i(wolf_use_texture_location, 0);
-            glUniform3fv(wolf_color_location, 1, reinterpret_cast<float *>(&lower_sphere_color));
+                draw_meshes(false);
+                glDepthMask(GL_FALSE);
+                draw_meshes(true);
+                glDepthMask(GL_TRUE);
+            }
 
-            glBindVertexArray(lower_sphere_vao);
-            glDrawElements(GL_TRIANGLES, std::size(mist_cube_indices), GL_UNSIGNED_INT, nullptr);
-            glCullFace(GL_BACK);
-//            glDisable(GL_BLEND);
+            // LOWER SEMISPHERE SHADOW
+            {
+                glUniform1f(shadow_use_bones_location, 0);
+
+                glBindVertexArray(lower_sphere_vao);
+                glDrawElements(GL_TRIANGLES, lower_sphere_index_count, GL_UNSIGNED_INT, nullptr);
+            }
+
+            glBindTexture(GL_TEXTURE_2D, shadow_map);
+            glGenerateMipmap(GL_TEXTURE_2D);
+
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, shadow_map);
+            glViewport(0, 0, width, height);
+
+
+            // WOLF MODEL
+            {
+                glUseProgram(wolf_program);
+                glUniform3f(wolf_mist_center_location, 0, 0, 0);
+                glUniform1f(wolf_mist_radius_location, 1);
+                glUniform4fv(wolf_mist_color_location, 1, reinterpret_cast<const float *>(&(mist_color)));
+                glUniform1f(wolf_use_bones_location, 1);
+                glUniformMatrix4fv(wolf_model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
+                glUniformMatrix4fv(wolf_view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
+                glUniformMatrix4fv(wolf_projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
+                glUniform3fv(wolf_light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
+                glUniform3fv(wolf_camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
+                glUniformMatrix4x3fv(wolf_bones_location, wolf_input_model.bones.size(), GL_FALSE,
+                                     reinterpret_cast<float *>(bones.data()));
+                glUniformMatrix4fv(wolf_shadow_projection_location, 1, GL_FALSE,
+                                   reinterpret_cast<float *>(&light_projection));
+                glUniform1i(wolf_shadow_map_location, 1);
+
+                glActiveTexture(GL_TEXTURE0);
+                draw_meshes(false);
+                glDepthMask(GL_FALSE);
+                draw_meshes(true);
+                glDepthMask(GL_TRUE);
+            }
         }
 
         // MIST
         {
-            glm::vec4 mist_color(0, 0, 0, 1);
-
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glEnable(GL_CULL_FACE);
             glCullFace(GL_FRONT);
+            glUseProgram(mist_program);
+            glUniform3f(mist_mist_center_location, 0, 0, 0);
+            glUniform1f(mist_mist_radius_location, 1);
+            glUniformMatrix4fv(mist_view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
+            glUniformMatrix4fv(mist_projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
+            glUniform3fv(mist_light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
+            glUniform3fv(mist_camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
+            glUniform4fv(mist_mist_color_location, 1, reinterpret_cast<float *>(&mist_color));
+
+            glBindVertexArray(mist_vao);
+            glDrawElements(GL_TRIANGLES, std::size(mist_cube_indices), GL_UNSIGNED_INT, nullptr);
+            glCullFace(GL_BACK);
+            glDisable(GL_BLEND);
+        }
+
+        // LOWER SEMISPHERE
+        {
+            glm::vec4 lower_sphere_color(0.8, 0.8, 0.8, 1);
+
             glUseProgram(wolf_program);
             glUniform3f(wolf_mist_center_location, 0, 0, 0);
             glUniform1f(wolf_mist_radius_location, 1);
@@ -665,12 +798,10 @@ int main() try
             glUniform3fv(wolf_light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
             glUniform3fv(wolf_camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
             glUniform1i(wolf_use_texture_location, 0);
-            glUniform3fv(wolf_color_location, 1, reinterpret_cast<float *>(&mist_color));
+            glUniform4fv(wolf_color_location, 1, reinterpret_cast<float *>(&lower_sphere_color));
 
-            glBindVertexArray(mist_vao);
+            glBindVertexArray(lower_sphere_vao);
             glDrawElements(GL_TRIANGLES, lower_sphere_index_count, GL_UNSIGNED_INT, nullptr);
-            glCullFace(GL_BACK);
-            glDisable(GL_BLEND);
         }
 
         // PARTICLES
@@ -683,7 +814,7 @@ int main() try
             glBindTexture(GL_TEXTURE_2D, particle_texture);
 
             glBindBuffer(GL_ARRAY_BUFFER, particle_vbo);
-            glBufferData(GL_ARRAY_BUFFER, particles.size() * sizeof(particle), particles.data(), GL_STATIC_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, particles.size() * sizeof(particle), particles.data(), GL_DYNAMIC_DRAW);
 
             glUseProgram(particle_program);
             glUniformMatrix4fv(particle_model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
@@ -698,36 +829,28 @@ int main() try
             glDisable(GL_BLEND);
         }
 
-//        // UPPER SPHERE
-//        {
-//
-//            glActiveTexture(GL_TEXTURE0);
-//            glBindTexture(GL_TEXTURE_2D, albedo_texture);
-//            glActiveTexture(GL_TEXTURE1);
-//            glBindTexture(GL_TEXTURE_2D, normal_texture);
-//            glActiveTexture(GL_TEXTURE2);
-//            glBindTexture(GL_TEXTURE_2D, environment_texture);
-//
-//            glEnable(GL_BLEND);
-////        glFrontFace(GL_FRONT_AND_BACK);
-//            glDisable(GL_CULL_FACE);
-//            glUseProgram(sphere_program);
-//            glUniformMatrix4fv(sphere_model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
-//            glUniformMatrix4fv(sphere_view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
-//            glUniformMatrix4fv(sphere_projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
-//            glUniform3fv(sphere_light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
-//            glUniform3fv(sphere_camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
-//            glUniform1f(sphere_sphere_radius_location, 1);
-//            glUniform1i(sphere_albedo_texture_location, 0);
-//            glUniform1i(sphere_normal_texture_location, 1);
-//            glUniform1i(sphere_environment_texture_location, 2);
-//
-//            glBindVertexArray(upper_sphere_vao);
-//            glDrawElements(GL_TRIANGLES, upper_sphere_index_count, GL_UNSIGNED_INT, nullptr);
-////            glFrontFace(GL_FRONT);
-////        glEnable(GL_CULL_FACE);
-//            glDisable(GL_BLEND);
-//        }
+        // UPPER SPHERE
+        {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, environment_texture);
+
+            glEnable(GL_BLEND);
+            glDisable(GL_CULL_FACE);
+            glUseProgram(sphere_program);
+            glUniformMatrix4fv(sphere_model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
+            glUniformMatrix4fv(sphere_view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
+            glUniformMatrix4fv(sphere_projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
+            glUniform3fv(sphere_light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
+            glUniform3fv(sphere_camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
+            glUniform1f(sphere_sphere_radius_location, 1);
+            glUniform1i(sphere_environment_texture_location, 0);
+            glUniform1f(sphere_ambient_light_intensity_location, ambient_light_intensity);
+
+            glBindVertexArray(upper_sphere_vao);
+            glDrawElements(GL_TRIANGLES, upper_sphere_index_count, GL_UNSIGNED_INT, nullptr);
+            glEnable(GL_CULL_FACE);
+            glDisable(GL_BLEND);
+        }
 
 
         SDL_GL_SwapWindow(window);
@@ -735,6 +858,8 @@ int main() try
 
     SDL_GL_DeleteContext(gl_context);
     SDL_DestroyWindow(window);
+
+    std::system("pkill cvlc");
 }
 catch (std::exception const & e)
 {

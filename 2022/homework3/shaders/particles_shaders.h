@@ -83,9 +83,11 @@ struct particle
     float angular_velocity;
 
     particle(std::default_random_engine& rng) {
-        position.x = std::uniform_real_distribution<float>{-0.3f, 0.3f}(rng);
-        position.y = 0.9f;
-        position.z = std::uniform_real_distribution<float>{-0.3f, 0.3f}(rng);
+        do {
+            position.x = std::uniform_real_distribution<float>{-1.f, 1.0f}(rng);
+            position.y = std::uniform_real_distribution<float>{0.0f, 1.0f}(rng);
+            position.z = std::uniform_real_distribution<float>{-1.0f, 1.0f}(rng);
+        } while(position.x * position.x + position.y * position.y + position.z * position.z > 1);
 
         size = std::uniform_real_distribution<float>{0.01f, 0.015f}(rng);
 
