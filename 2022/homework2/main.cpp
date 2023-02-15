@@ -706,9 +706,9 @@ int main() try
         glUniformMatrix4fv(projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
         glUniformMatrix4fv(transform_location, 1, GL_FALSE, reinterpret_cast<float *>(&transform));
         glUniformMatrix4fv(lamp_transform_location, 1, GL_FALSE, reinterpret_cast<float *>(&lamp_transform));
-/    if (depth.r+0.001 >= dist) {
+//    if (depth.r+0.001 >= dist) {
 //        light += lamp_color;
-      light += lamp_color * phong(lamp_direction, albedo);
+//      light += lamp_color * phong(lamp_direction, albedo);
 //            * 1 / (lamp_attenuation.x + lamp_attenuation.y * dist + lamp_attenuation.z * dist * dist);
 //    }
         glUniform3fv(camera_position_location, 1, reinterpret_cast<float *>(&camera_position));

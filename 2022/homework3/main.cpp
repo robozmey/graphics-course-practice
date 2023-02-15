@@ -457,11 +457,11 @@ int main() try
 
     glPointSize(5.f);
 
-//    auto play_macarena = [](std::string project_root){
-//        std::string audio_command = "cvlc " + project_root + "/audio/macarena.mp3";
-//        std::system(audio_command.c_str());
-//    };
-//    std::thread macarena_thread(play_macarena, project_root);
+    auto play_macarena = [](std::string project_root){
+        std::string audio_command = "cvlc " + project_root + "/audio/macarena.mp3";
+        std::system(audio_command.c_str());
+    };
+    std::thread macarena_thread(play_macarena, project_root);
 
     bool pause = false;
 
